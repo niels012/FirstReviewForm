@@ -251,16 +251,6 @@ input:checked + .chip::before { border-color: var(--accent); background-color: v
 input:focus-visible + .chip { box-shadow: 0 0 0 3px var(--accent-ring); }
 .chip.hide { display: none; }
 .chip-empty { font-size: 13px; color: var(--muted); padding: 5px 0; }
-.picked { margin-top: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); padding: 10px 12px; }
-.picked-h { display: flex; justify-content: space-between; align-items: baseline; font-size: 12.5px; font-weight: 600; color: var(--text-2); margin-bottom: 6px; }
-.picked-h span { font-weight: 500; color: var(--muted); }
-.picked ol { margin: 0; padding-left: 22px; columns: 2 220px; column-gap: 28px; }
-.picked li { break-inside: avoid; padding: 2px 0; font-size: 13.5px; color: var(--text); }
-.picked li::marker { color: var(--muted); font-variant-numeric: tabular-nums; }
-.picked .x { margin-left: 6px; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 4px; border-radius: 4px; vertical-align: 1px; }
-.picked .x:hover { color: var(--no); background: var(--no-bg); }
-.picked .x:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.picked-none { font-size: 13px; color: var(--muted); }
 textarea { min-height: 96px; resize: vertical; line-height: 1.5; }
 
 /* Validation */
@@ -513,6 +503,14 @@ function missingKeys(p) {
   return miss;
 }
 
+// Changes Made options: checked ones first, then the rest, each group in the normal option order.
+function chipItems(p) {
+  const order = CHANGE_TAGS.map((t, i) => i);
+  order.sort((a, b) => (p.changes.includes(CHANGE_TAGS[b]) - p.changes.includes(CHANGE_TAGS[a])) || a - b);
+  return order.map(i => { const t = CHANGE_TAGS[i];
+    return `<input type="checkbox" id="chg-${i}" name="changes" value="${esc(t)}" ${p.changes.includes(t) ? "checked" : ""}><label class="chip" for="chg-${i}">${esc(t)}</label>`;
+  }).join("") + `<span class="chip-empty" id="chgEmpty" hidden>No changes match your search.</span>`;
+}
 function renderHeaderBadge() {
   document.getElementById("pidBadge").outerHTML = badge(people[current].review).replace('<span class="badge', '<span id="pidBadge" class="badge');
 }
@@ -536,10 +534,7 @@ function renderForm() {
         `<div class="chip-tools"><div class="search"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>` +
         `<input type="search" class="input" id="chgSearch" placeholder="Search changes" aria-label="Search changes" aria-controls="chgList" autocomplete="off" value="${esc(chgQuery)}"></div>` +
         `<span class="chip-count" id="chgCount"></span></div>` +
-        `<fieldset class="chips" id="chgList" aria-label="Changes Made">` + CHANGE_TAGS.map((t, i) =>
-          `<input type="checkbox" id="chg-${i}" name="changes" value="${esc(t)}" ${p.changes.includes(t) ? "checked" : ""}><label class="chip" for="chg-${i}">${esc(t)}</label>`).join("") +
-        `<span class="chip-empty" id="chgEmpty" hidden>No changes match your search.</span></fieldset>` +
-        `<div class="picked" id="chgPicked" aria-live="polite"></div>`, "changes", "Select all that apply", "stack") +
+        `<fieldset class="chips" id="chgList" aria-label="Changes Made">${chipItems(p)}</fieldset>`, "changes", "Select all that apply", "stack") +
       row("Notes and Roadblocks", `<textarea id="notes" name="notes" placeholder="E.g. conflicting birth dates in two sources, waiting on a record that is not indexed yet">${esc(p.notes)}</textarea>`, "notes", "", "stack"),
       "sec-notes");
   updateProgress(); filterChips(); updateChgCount();
@@ -608,16 +603,6 @@ function updateChgCount() {
   const el = document.getElementById("chgCount"); if (!el) return;
   const n = people[current].changes.length;
   el.textContent = n ? `${n} selected` : "None selected";
-  renderPicked();
-}
-// List of the checked Changes Made options, in option order, each with a remove button.
-function renderPicked() {
-  const box = document.getElementById("chgPicked"); if (!box) return;
-  const picked = people[current].changes;
-  box.innerHTML = `<div class="picked-h">Changes made<span>${picked.length ? picked.length + " selected" : ""}</span></div>` +
-    (picked.length
-      ? `<ol>${picked.map(t => `<li>${esc(t)}<button type="button" class="x" data-remove="${CHANGE_TAGS.indexOf(t)}" aria-label="Remove ${esc(t)}" title="Remove">✕</button></li>`).join("")}</ol>`
-      : `<p class="picked-none">Nothing checked yet. Checked options will be listed here.</p>`);
 }
 
 const form = document.getElementById("form");
@@ -640,7 +625,10 @@ form.addEventListener("change", e => {
     p[t.name] = t.value;
     if (t.name === "dup") { if (t.value !== "Yes") p.dupMerged = ""; renderForm(); document.getElementById(t.id)?.focus(); }
   } else if (t.name === "changes") {
-    p.changes = [...form.querySelectorAll('input[name="changes"]:checked')].map(x => x.value);
+    p.changes = CHANGE_TAGS.filter(tag => form.querySelector(`input[name="changes"][value="${CSS.escape(tag)}"]`)?.checked);
+    const fromSearch = document.activeElement?.id === "chgSearch";   // Enter in the search box keeps focus there
+    document.getElementById("chgList").innerHTML = chipItems(p); filterChips();
+    if (!fromSearch) document.getElementById(t.id)?.focus();
     updateChgCount();
   }
   touchStatus(p); markDirty(p.pid); renderHeaderBadge();
@@ -666,11 +654,6 @@ form.addEventListener("input", e => {
   }
 });
 
-form.addEventListener("click", e => {
-  const x = e.target.closest(".picked .x"); if (!x) return;
-  const box = document.getElementById("chg-" + x.dataset.remove);
-  if (box && box.checked) { box.checked = false; box.dispatchEvent(new Event("change", { bubbles: true })); }
-});
 document.getElementById("queue").addEventListener("click", e => {
   const b = e.target.closest(".q-row"); if (!b) return;
   current = +b.dataset.i; chgQuery = ""; renderQueue(); renderForm();
