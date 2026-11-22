@@ -146,6 +146,8 @@ button, input, textarea { font: inherit; color: inherit; }
 .kpi { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border); }
 .kpi .lbl { font-size: 12.5px; color: var(--muted); }
 .kpi .val { font-size: 13.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.data-btns { display: flex; gap: 8px; margin-top: 10px; }
+.data-btns .btn { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 6px 10px; font-size: 12.5px; }
 
 /* ---------- Workspace ---------- */
 .work { min-width: 0; min-height: 0; overflow-y: auto; }
@@ -320,6 +322,15 @@ textarea { min-height: 96px; resize: vertical; line-height: 1.5; }
     <section class="stats" aria-label="My stats">
       <h2>My stats</h2>
       <div id="stats"></div>
+      <div class="data-btns">
+        <button type="button" class="btn" id="exportBtn" title="Download every answer as data.json">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+          Export data</button>
+        <button type="button" class="btn" id="importBtn" title="Load answers from a data.json file">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21V9"/><path d="m7 14 5-5 5 5"/><path d="M5 3h14"/></svg>
+          Import data</button>
+        <input type="file" id="importFile" accept=".json,application/json" hidden>
+      </div>
     </section>
   </aside>
 
@@ -398,8 +409,12 @@ function saveState() {
 function saveSoon() { clearTimeout(saveTimer); saveTimer = setTimeout(saveState, 300); }
 function loadState() {
   let d;
-  try { d = JSON.parse(localStorage.getItem(STORE_KEY) || "null"); } catch (e) { return; }
-  if (!d || typeof d !== "object") return;
+  try { d = JSON.parse(localStorage.getItem(STORE_KEY) || "null"); } catch (e) { return false; }
+  return applyState(d, true);
+}
+// Copies answers from saved/exported data onto the queue. Only known fields and Person IDs are used.
+function applyState(d, withView) {
+  if (!d || typeof d !== "object" || !d.people || typeof d.people !== "object") return false;
   people.forEach(p => {
     const sv = d.people && d.people[p.pid]; if (!sv) return;
     SAVED_FIELDS.forEach(f => {
@@ -411,9 +426,23 @@ function loadState() {
     if (p.dup !== "Yes") p.dupMerged = "";
   });
   const i = people.findIndex(p => p.pid === d.current); if (i >= 0) current = i;
-  if (["all", "Assigned", "Not Started", "Complete"].includes(d.qFilter)) qFilter = d.qFilter;
-  if (typeof d.qSearch === "string") qSearch = d.qSearch;
-  savedScroll = d.scroll || null;
+  if (withView) {
+    if (["all", "Assigned", "Not Started", "Complete"].includes(d.qFilter)) qFilter = d.qFilter;
+    if (typeof d.qSearch === "string") qSearch = d.qSearch;
+    savedScroll = d.scroll || null;
+  }
+  return true;
+}
+function exportData() {
+  const data = {
+    app: "Branches to Tree Project Tracking", exportedAt: new Date().toISOString(),
+    current: people[current].pid,
+    people: Object.fromEntries(people.map(p => [p.pid, Object.fromEntries(SAVED_FIELDS.map(f => [f, p[f]]))]))
+  };
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: "data.json" });
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 function restoreScroll() {
   if (!savedScroll) return;
@@ -613,10 +642,28 @@ form.addEventListener("submit", e => {
   toast(`Submitted ${p.pid}.`);
 });
 
-loadState();
+const hadLocal = loadState();
 document.getElementById("qSearch").value = qSearch;
 renderQueue(); renderForm();
 restoreScroll();
+// No answers saved in this browser yet: start from data.json published with the site (if there is one).
+if (!hadLocal) {
+  fetch("data.json", { cache: "no-store" }).then(r => r.ok ? r.json() : null).then(d => {
+    if (applyState(d, false)) { renderQueue(); renderForm(); }
+  }).catch(() => { /* no data.json, or opened as a local file: keep the blank form */ });
+}
+
+document.getElementById("exportBtn").addEventListener("click", () => { exportData(); toast("Exported data.json to your downloads."); });
+document.getElementById("importBtn").addEventListener("click", () => document.getElementById("importFile").click());
+document.getElementById("importFile").addEventListener("change", e => {
+  const f = e.target.files[0]; e.target.value = "";
+  if (!f) return;
+  f.text().then(t => JSON.parse(t)).then(d => {
+    if (!applyState(d, false)) throw new Error("bad file");
+    chgQuery = ""; renderQueue(); renderForm();
+    toast(`Imported answers from ${f.name}.`);
+  }).catch(() => toast("That file isn't a data.json export from this form."));
+});
 
 document.querySelector(".work").addEventListener("scroll", saveSoon, { passive: true });
 window.addEventListener("scroll", saveSoon, { passive: true });
