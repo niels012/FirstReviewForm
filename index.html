@@ -251,6 +251,16 @@ input:checked + .chip::before { border-color: var(--accent); background-color: v
 input:focus-visible + .chip { box-shadow: 0 0 0 3px var(--accent-ring); }
 .chip.hide { display: none; }
 .chip-empty { font-size: 13px; color: var(--muted); padding: 5px 0; }
+.picked { margin-top: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); padding: 10px 12px; }
+.picked-h { display: flex; justify-content: space-between; align-items: baseline; font-size: 12.5px; font-weight: 600; color: var(--text-2); margin-bottom: 6px; }
+.picked-h span { font-weight: 500; color: var(--muted); }
+.picked ol { margin: 0; padding-left: 22px; columns: 2 220px; column-gap: 28px; }
+.picked li { break-inside: avoid; padding: 2px 0; font-size: 13.5px; color: var(--text); }
+.picked li::marker { color: var(--muted); font-variant-numeric: tabular-nums; }
+.picked .x { margin-left: 6px; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 4px; border-radius: 4px; vertical-align: 1px; }
+.picked .x:hover { color: var(--no); background: var(--no-bg); }
+.picked .x:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.picked-none { font-size: 13px; color: var(--muted); }
 textarea { min-height: 96px; resize: vertical; line-height: 1.5; }
 
 /* Validation */
@@ -391,7 +401,8 @@ const OPTS = {
 const LIGHT = new Set(["o-moreinfo","o-already","o-completed","o-avail"]);
 const ORDINANCES = [["baptism","Baptism"],["confirmation","Confirmation"],["initiatory","Initiatory"],
   ["endowment","Endowment"],["sealingParents","Sealing to Parents"],["sealingSpouse","Sealing to Spouse"]];
-const CHANGE_TAGS = ["Added sources","Standardized dates","Added birth date","Standardized places","Standardized birth place","Standardized death place","Attached record hints","Merged duplicates","Fixed relationships","Added family members","Added parents","Added grandparents","Added siblings","Added spouse","Added children"];
+const CHANGE_TAGS = ["Added sources","Standardized dates","Added birth date","Standardized places","Standardized birth place","Standardized death place","Attached record hints","Merged duplicates","Fixed relationships","Added family members","Added parents","Added grandparents","Added siblings","Added spouse","Added children",
+  "Added 1 child","Added 1 sibling","Added a death place","Added a father","Added a grandson","Added a husband","Added a wife","Added ancestors","Added date and place of birth","Added date and place of marriage","Added death date","Added death info","Added grandchild","Added grandchildren","Added marriage record","Added mother","Connected to the large tree","Added vitals","Merged PID","None","Standardized marriage information","Standardized marriage date","Standardized marriage place","Standardized vital information"];
 const CHECKS = ["largeTree","sources","hint","dup","dupMerged", ...ORDINANCES.map(o => o[0])];
 const BADGE = { "Started": "b-assigned", "Not Started": "b-new", "Complete": "b-done" };
 
@@ -527,7 +538,8 @@ function renderForm() {
         `<span class="chip-count" id="chgCount"></span></div>` +
         `<fieldset class="chips" id="chgList" aria-label="Changes Made">` + CHANGE_TAGS.map((t, i) =>
           `<input type="checkbox" id="chg-${i}" name="changes" value="${esc(t)}" ${p.changes.includes(t) ? "checked" : ""}><label class="chip" for="chg-${i}">${esc(t)}</label>`).join("") +
-        `<span class="chip-empty" id="chgEmpty" hidden>No changes match your search.</span></fieldset>`, "changes", "Select all that apply", "stack") +
+        `<span class="chip-empty" id="chgEmpty" hidden>No changes match your search.</span></fieldset>` +
+        `<div class="picked" id="chgPicked" aria-live="polite"></div>`, "changes", "Select all that apply", "stack") +
       row("Notes and Roadblocks", `<textarea id="notes" name="notes" placeholder="E.g. conflicting birth dates in two sources, waiting on a record that is not indexed yet">${esc(p.notes)}</textarea>`, "notes", "", "stack"),
       "sec-notes");
   updateProgress(); filterChips(); updateChgCount();
@@ -596,6 +608,16 @@ function updateChgCount() {
   const el = document.getElementById("chgCount"); if (!el) return;
   const n = people[current].changes.length;
   el.textContent = n ? `${n} selected` : "None selected";
+  renderPicked();
+}
+// List of the checked Changes Made options, in option order, each with a remove button.
+function renderPicked() {
+  const box = document.getElementById("chgPicked"); if (!box) return;
+  const picked = people[current].changes;
+  box.innerHTML = `<div class="picked-h">Changes made<span>${picked.length ? picked.length + " selected" : ""}</span></div>` +
+    (picked.length
+      ? `<ol>${picked.map(t => `<li>${esc(t)}<button type="button" class="x" data-remove="${CHANGE_TAGS.indexOf(t)}" aria-label="Remove ${esc(t)}" title="Remove">✕</button></li>`).join("")}</ol>`
+      : `<p class="picked-none">Nothing checked yet. Checked options will be listed here.</p>`);
 }
 
 const form = document.getElementById("form");
@@ -644,6 +666,11 @@ form.addEventListener("input", e => {
   }
 });
 
+form.addEventListener("click", e => {
+  const x = e.target.closest(".picked .x"); if (!x) return;
+  const box = document.getElementById("chg-" + x.dataset.remove);
+  if (box && box.checked) { box.checked = false; box.dispatchEvent(new Event("change", { bubbles: true })); }
+});
 document.getElementById("queue").addEventListener("click", e => {
   const b = e.target.closest(".q-row"); if (!b) return;
   current = +b.dataset.i; chgQuery = ""; renderQueue(); renderForm();
