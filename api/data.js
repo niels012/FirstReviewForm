@@ -32,7 +32,10 @@ function clean(p) {
     ? p.changes.filter(x => typeof x === "string").map(x => x.slice(0, 120)).slice(0, 50) : [];
   out.notes = typeof p?.notes === "string" ? p.notes.slice(0, 10000) : "";
   out.submitted = p?.submitted === true;
-  out.review = typeof p?.review === "string" ? p.review.slice(0, 40) : "Not Started";
+  const review = p?.review === "Assigned" ? "Started" : p?.review;
+  out.review = ["Not Started", "Started", "Complete"].includes(review) ? review : "Not Started";
+  // When the review was started / completed (milliseconds since 1970), or null
+  for (const k of ["startedAt", "completedAt"]) out[k] = Number.isFinite(p?.[k]) && p[k] > 0 ? Math.round(p[k]) : null;
   return out;
 }
 

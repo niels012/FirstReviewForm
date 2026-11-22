@@ -130,6 +130,7 @@ button, input, textarea { font: inherit; color: inherit; }
 .q-row[aria-current="true"]::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 3px; background: var(--accent); }
 .q-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .q-pid { font-family: var(--mono); font-weight: 700; font-size: 13.5px; letter-spacing: .02em; }
+.q-time { grid-column: 1 / -1; justify-self: end; margin-top: -2px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .q-meta { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .q-bar { flex: 1; height: 4px; border-radius: 4px; background: var(--border); overflow: hidden; }
 .q-bar span { display: block; height: 100%; border-radius: 4px; background: var(--progress); transition: width .25s; }
@@ -392,17 +393,17 @@ const ORDINANCES = [["baptism","Baptism"],["confirmation","Confirmation"],["init
   ["endowment","Endowment"],["sealingParents","Sealing to Parents"],["sealingSpouse","Sealing to Spouse"]];
 const CHANGE_TAGS = ["Added sources","Standardized dates","Added birth date","Standardized places","Standardized birth place","Standardized death place","Attached record hints","Merged duplicates","Fixed relationships","Added family members","Added parents","Added grandparents","Added siblings","Added spouse","Added children"];
 const CHECKS = ["largeTree","sources","hint","dup","dupMerged", ...ORDINANCES.map(o => o[0])];
-const BADGE = { "Assigned": "b-assigned", "Not Started": "b-new", "Complete": "b-done" };
+const BADGE = { "Started": "b-assigned", "Not Started": "b-new", "Complete": "b-done" };
 
 // Empty string = not answered yet; nothing is pre-selected.
 const blank = () => Object.fromEntries(CHECKS.map(k => [k, ""]));
-const person = (pid, review) => ({ ...blank(), pid, review, changes: [], notes: "" });
+const person = (pid, review) => ({ ...blank(), pid, review, changes: [], notes: "", startedAt: null, completedAt: null });
 const people = ["LDSW-8ZF","LFBL-D1C","LXQG-J2N","L6S9-ZR1","L6R5-K48","LFT1-LMN"].map(pid => person(pid, "Not Started"));
 let current = 0, qFilter = "all", qSearch = "", chgQuery = "";
 
 // ---- Keep work across refreshes: everything is saved in this browser (localStorage) as you go ----
 const STORE_KEY = "branches-to-tree-tracking-v1";
-const SAVED_FIELDS = [...CHECKS, "changes", "notes", "submitted", "review"];
+const SAVED_FIELDS = [...CHECKS, "changes", "notes", "submitted", "review", "startedAt", "completedAt"];
 let savedScroll = null, saveTimer;
 function saveState() {
   try {
@@ -430,13 +431,17 @@ function applyState(d, withView) {
       if (!(f in sv)) return;
       if (f === "changes") { if (Array.isArray(sv[f])) p[f] = sv[f].filter(x => typeof x === "string"); }
       else if (f === "submitted") p[f] = !!sv[f];
+      else if (f === "startedAt" || f === "completedAt") p[f] = Number.isFinite(sv[f]) ? sv[f] : null;
       else if (typeof sv[f] === "string") p[f] = sv[f];
     });
     if (p.dup !== "Yes") p.dupMerged = "";
+    // Status follows the answers: Complete once submitted, Started once anything is filled in.
+    if (p.submitted) p.review = "Complete";
+    else if (p.review === "Assigned" || (p.review === "Not Started" && (answered(p) || p.changes.length || p.notes.trim()))) p.review = "Started";
   });
   const i = people.findIndex(p => p.pid === d.current); if (i >= 0) current = i;
   if (withView) {
-    if (["all", "Assigned", "Not Started", "Complete"].includes(d.qFilter)) qFilter = d.qFilter;
+    if (["all", "Started", "Not Started", "Complete"].includes(d.qFilter)) qFilter = d.qFilter;
     if (typeof d.qSearch === "string") qSearch = d.qSearch;
     savedScroll = d.scroll || null;
   }
@@ -497,11 +502,14 @@ function missingKeys(p) {
   return miss;
 }
 
+function renderHeaderBadge() {
+  document.getElementById("pidBadge").outerHTML = badge(people[current].review).replace('<span class="badge', '<span id="pidBadge" class="badge');
+}
 function renderForm() {
   const p = people[current];
   document.getElementById("pid").textContent = p.pid;
   document.getElementById("crumbPid").textContent = p.pid;
-  document.getElementById("pidBadge").outerHTML = badge(p.review).replace('<span class="badge', '<span id="pidBadge" class="badge');
+  renderHeaderBadge();
   document.getElementById("pidLink").href = `https://www.familysearch.org/tree/person/details/${p.pid}`;
   document.getElementById("sections").innerHTML =
     card(1, "Record checks", "Open the record and answer each check.",
@@ -525,21 +533,37 @@ function renderForm() {
   updateProgress(); filterChips(); updateChgCount();
 }
 
+// "Started Nov 23, 9:14 AM" / "Completed Nov 23, 10:02 AM" under the status badge
+const stampFmt = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+function statusTime(p) {
+  const [label, t] = p.review === "Complete" ? ["Completed", p.completedAt] : p.review === "Started" ? ["Started", p.startedAt] : [];
+  if (!t) return "";
+  const full = new Date(t).toLocaleString("en-US", { dateStyle: "full", timeStyle: "short" });
+  return `<span class="q-time" title="${label} ${full}">${label} ${stampFmt.format(new Date(t))}</span>`;
+}
+// Moves a person between Not Started and Started as answers are filled in or all cleared.
+function touchStatus(p) {
+  if (p.submitted) return false;
+  const any = answered(p) > 0 || p.changes.length > 0 || p.notes.trim() !== "";
+  if (any && p.review !== "Started") { p.review = "Started"; p.startedAt = p.startedAt || Date.now(); return true; }
+  if (!any && p.review === "Started") { p.review = "Not Started"; p.startedAt = null; return true; }
+  return false;
+}
 function renderQueue() {
-  const RANK = { "Assigned": 0, "Not Started": 1, "Complete": 2 };
-  const counts = { all: people.length, Assigned: 0, "Not Started": 0, Complete: 0 };
-  people.forEach(p => counts[p.review]++);
+  const RANK = { "Started": 0, "Not Started": 1, "Complete": 2 };
+  const counts = { all: people.length, Started: 0, "Not Started": 0, Complete: 0 };
+  people.forEach(p => { if (p.review in counts) counts[p.review]++; });
   document.getElementById("queueCount").textContent = people.length;
-  document.getElementById("qTabs").innerHTML = [["all","All"],["Assigned","Assigned"],["Not Started","New"],["Complete","Done"]]
+  document.getElementById("qTabs").innerHTML = [["all","All"],["Started","Started"],["Not Started","New"],["Complete","Done"]]
     .map(([k, l]) => `<button type="button" class="tab" data-f="${k}" aria-pressed="${qFilter === k}">${l}<b>${counts[k]}</b></button>`).join("");
   const q = qSearch.trim().toUpperCase();
   const order = people.map((p, i) => i)
     .filter(i => (qFilter === "all" || people[i].review === qFilter) && (!q || people[i].pid.includes(q)))
-    .sort((a, b) => RANK[people[a].review] - RANK[people[b].review] || a - b);
+    .sort((a, b) => (RANK[people[a].review] ?? 1) - (RANK[people[b].review] ?? 1) || a - b);
   document.getElementById("queue").innerHTML = order.length ? order.map(i => {
     const p = people[i], n = answered(p);
     return `<li><button type="button" class="q-row" data-i="${i}" aria-current="${i === current}">
-      <span class="q-pid">${p.pid}</span>${badge(p.review)}
+      <span class="q-pid">${p.pid}</span>${badge(p.review)}${statusTime(p)}
       <span class="q-meta"><span class="q-bar"><span style="width:${n / totalQs(p) * 100}%"></span></span>${n}/${totalQs(p)}</span>
     </button></li>`;
   }).join("") : `<li class="q-empty">No people match.</li>`;
@@ -597,7 +621,7 @@ form.addEventListener("change", e => {
     p.changes = [...form.querySelectorAll('input[name="changes"]:checked')].map(x => x.value);
     updateChgCount();
   }
-  markDirty(p.pid);
+  touchStatus(p); markDirty(p.pid); renderHeaderBadge();
   updateProgress(); renderQueue();
 });
 // Clicking the already-selected choice clears it (the model still holds the old value during click).
@@ -606,7 +630,7 @@ form.addEventListener("click", e => {
   if (t.type !== "radio" || p[t.name] !== t.value) return;
   t.checked = false; p[t.name] = "";
   if (t.name === "dup") { p.dupMerged = ""; renderForm(); document.getElementById(t.id)?.focus(); }
-  markDirty(p.pid);
+  touchStatus(p); markDirty(p.pid); renderHeaderBadge();
   updateProgress(); renderQueue();
 });
 form.addEventListener("input", e => {
@@ -614,6 +638,7 @@ form.addEventListener("input", e => {
   if (t.id === "chgSearch") { chgQuery = t.value; filterChips(); return; }
   if (t.name === "notes") {
     people[current][t.name] = t.value;
+    if (touchStatus(people[current])) { renderQueue(); renderHeaderBadge(); }
     saveSoon(); markDirty(people[current].pid);
     if (t.value.trim()) t.closest("[data-key]")?.classList.remove("invalid");
   }
@@ -649,7 +674,8 @@ form.addEventListener("submit", e => {
     toast(`${miss.length} required field${miss.length > 1 ? "s" : ""} still empty for ${p.pid}.`);
     return;
   }
-  p.submitted = true; p.review = "Complete"; markDirty(p.pid); renderQueue(); renderForm();
+  p.submitted = true; p.review = "Complete"; p.completedAt = Date.now(); p.startedAt = p.startedAt || p.completedAt;
+  markDirty(p.pid); renderQueue(); renderForm();
   toast(`Submitted ${p.pid}.`);
 });
 
