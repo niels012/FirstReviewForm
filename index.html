@@ -77,6 +77,14 @@ button, input, textarea { font: inherit; color: inherit; }
 .brand-sep { color: var(--border-strong); }
 .brand-sub { color: var(--muted); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .user { display: flex; align-items: center; gap: 14px; }
+.sync { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 500; color: var(--muted); white-space: nowrap; padding: 3px 10px; border-radius: 999px; background: var(--hover); }
+.sync::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.sync[data-state="ok"]::before { background: var(--yes); }
+.sync[data-state="saving"]::before { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
+.sync[data-state="error"] { color: var(--no); background: var(--no-bg); }
+.sync[data-state="error"]::before { background: var(--no); }
+@keyframes pulse { 50% { opacity: .3; } }
+@media (max-width: 640px) { .sync { font-size: 0; padding: 6px; gap: 0; } }
 .clock { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .vsep { width: 1px; height: 24px; background: var(--border); }
 .who { display: flex; align-items: center; gap: 10px; }
@@ -296,6 +304,7 @@ textarea { min-height: 96px; resize: vertical; line-height: 1.5; }
     <span class="brand-sub">Project Tracking</span>
   </div>
   <div class="user">
+    <span class="sync" id="syncStatus" data-state="local" role="status" aria-live="polite" title="Where your answers are saved">Saved on this device</span>
     <span class="clock" title="Reviewer local time">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
       <span id="rvTime">12:00 AM</span>
@@ -588,6 +597,7 @@ form.addEventListener("change", e => {
     p.changes = [...form.querySelectorAll('input[name="changes"]:checked')].map(x => x.value);
     updateChgCount();
   }
+  markDirty(p.pid);
   updateProgress(); renderQueue();
 });
 // Clicking the already-selected choice clears it (the model still holds the old value during click).
@@ -596,6 +606,7 @@ form.addEventListener("click", e => {
   if (t.type !== "radio" || p[t.name] !== t.value) return;
   t.checked = false; p[t.name] = "";
   if (t.name === "dup") { p.dupMerged = ""; renderForm(); document.getElementById(t.id)?.focus(); }
+  markDirty(p.pid);
   updateProgress(); renderQueue();
 });
 form.addEventListener("input", e => {
@@ -603,7 +614,7 @@ form.addEventListener("input", e => {
   if (t.id === "chgSearch") { chgQuery = t.value; filterChips(); return; }
   if (t.name === "notes") {
     people[current][t.name] = t.value;
-    saveSoon();
+    saveSoon(); markDirty(people[current].pid);
     if (t.value.trim()) t.closest("[data-key]")?.classList.remove("invalid");
   }
 });
@@ -638,7 +649,7 @@ form.addEventListener("submit", e => {
     toast(`${miss.length} required field${miss.length > 1 ? "s" : ""} still empty for ${p.pid}.`);
     return;
   }
-  p.submitted = true; p.review = "Complete"; renderQueue(); renderForm();
+  p.submitted = true; p.review = "Complete"; markDirty(p.pid); renderQueue(); renderForm();
   toast(`Submitted ${p.pid}.`);
 });
 
@@ -646,12 +657,88 @@ const hadLocal = loadState();
 document.getElementById("qSearch").value = qSearch;
 renderQueue(); renderForm();
 restoreScroll();
-// No answers saved in this browser yet: start from data.json published with the site (if there is one).
-if (!hadLocal) {
-  fetch("data.json", { cache: "no-store" }).then(r => r.ok ? r.json() : null).then(d => {
-    if (applyState(d, false)) { renderQueue(); renderForm(); }
-  }).catch(() => { /* no data.json, or opened as a local file: keep the blank form */ });
+// ---- Shared database: every device that opens the site sees the same answers ----
+// The browser copy (above) shows instantly; the database is the source of truth and is checked every 15 s.
+const API = "api/data";
+const ONLINE = location.protocol === "http:" || location.protocol === "https:";
+const dirty = new Set(), inflight = new Set();
+let pushTimer, retryTimer, dbReady = false, pulling = false;
+const pick = p => Object.fromEntries(SAVED_FIELDS.map(f => [f, p[f]]));
+const hasAnswers = p => answered(p) > 0 || p.changes.length > 0 || p.notes.trim() !== "" || !!p.submitted;
+const editKey = () => { try { return localStorage.getItem("branches-to-tree-edit-key") || ""; } catch (e) { return ""; } };
+
+function setSync(state, text) {
+  const el = document.getElementById("syncStatus");
+  el.dataset.state = state; el.textContent = text; el.title = text;
 }
+function markDirty(pid) {
+  if (!ONLINE) return;
+  dirty.add(pid);
+  setSync("saving", "Saving…");
+  clearTimeout(pushTimer); pushTimer = setTimeout(pushDirty, 600);
+}
+async function pushDirty() {
+  if (!dirty.size) return;
+  const ids = [...dirty]; dirty.clear(); ids.forEach(id => inflight.add(id));
+  const body = { people: Object.fromEntries(ids.map(pid => [pid, pick(people.find(p => p.pid === pid))])) };
+  try {
+    const r = await fetch(API, { method: "POST", headers: { "Content-Type": "application/json", "x-edit-key": editKey() }, body: JSON.stringify(body) });
+    if (r.status === 401) {
+      ids.forEach(id => dirty.add(id));
+      const k = prompt("Enter the edit passcode to save changes to the shared database:");
+      if (k) { try { localStorage.setItem("branches-to-tree-edit-key", k); } catch (e) {} return pushDirty(); }
+      setSync("error", "Not saved: passcode needed"); return;
+    }
+    if (!r.ok) throw new Error(r.status);
+    dbReady = true;
+    setSync(dirty.size ? "saving" : "ok", dirty.size ? "Saving…" : "All changes saved");
+  } catch (e) {
+    ids.forEach(id => dirty.add(id));
+    setSync("error", "Offline: saved on this device, retrying");
+    clearTimeout(retryTimer); retryTimer = setTimeout(pushDirty, 10000);
+  } finally { ids.forEach(id => inflight.delete(id)); }
+}
+// Brings in answers saved from other devices. People with unsent edits here are left alone.
+async function pullRemote(initial) {
+  if (!ONLINE || pulling) return;
+  pulling = true;
+  try {
+    const r = await fetch(API, { cache: "no-store" });
+    if (r.status === 503 || r.status === 404) { setSync("local", "Saved on this device"); return; }
+    if (!r.ok) throw new Error(r.status);
+    const server = (await r.json()).people || {};
+    dbReady = true;
+    const typingNotes = document.activeElement && document.activeElement.id === "notes";
+    let changed = false, currentChanged = false;
+    people.forEach((p, i) => {
+      const sv = server[p.pid];
+      if (!sv) { if (initial && hasAnswers(p)) markDirty(p.pid); return; }   // first time: upload what this device has
+      if (dirty.has(p.pid) || inflight.has(p.pid) || (i === current && typingNotes)) return;
+      const before = JSON.stringify(pick(p));
+      applyState({ people: { [p.pid]: sv } }, false);
+      if (JSON.stringify(pick(p)) !== before) { changed = true; if (i === current) currentChanged = true; }
+    });
+    if (changed) { renderQueue(); if (currentChanged) renderForm(); }
+    if (!dirty.size) setSync("ok", "All changes saved");
+  } catch (e) {
+    setSync("error", "Offline: saved on this device");
+  } finally { pulling = false; }
+}
+(async () => {
+  // No answers saved in this browser yet: start from data.json published with the site (if there is one).
+  if (!hadLocal) {
+    try {
+      const r = await fetch("data.json", { cache: "no-store" });
+      if (r.ok && applyState(await r.json(), false)) { renderQueue(); renderForm(); }
+    } catch (e) { /* no data.json, or opened as a local file: keep the blank form */ }
+  }
+  if (ONLINE) {
+    await pullRemote(true);
+    setInterval(() => { if (!document.hidden) pullRemote(false); }, 15000);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) pullRemote(false); });
+    window.addEventListener("online", () => { pushDirty(); pullRemote(false); });
+  }
+})();
 
 document.getElementById("exportBtn").addEventListener("click", () => { exportData(); toast("Exported data.json to your downloads."); });
 document.getElementById("importBtn").addEventListener("click", () => document.getElementById("importFile").click());
@@ -661,6 +748,7 @@ document.getElementById("importFile").addEventListener("change", e => {
   f.text().then(t => JSON.parse(t)).then(d => {
     if (!applyState(d, false)) throw new Error("bad file");
     chgQuery = ""; renderQueue(); renderForm();
+    people.forEach(p => markDirty(p.pid));
     toast(`Imported answers from ${f.name}.`);
   }).catch(() => toast("That file isn't a data.json export from this form."));
 });
