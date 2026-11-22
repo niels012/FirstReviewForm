@@ -685,8 +685,22 @@ form.addEventListener("submit", e => {
     return;
   }
   p.submitted = true; p.review = "Complete"; p.completedAt = Date.now(); p.startedAt = p.startedAt || p.completedAt;
-  markDirty(p.pid); renderQueue(); renderForm();
-  toast(`Submitted ${p.pid}.`);
+  markDirty(p.pid);
+  // Go straight to the first "Not Started" person in the queue (queue order), if there is one.
+  const next = people.findIndex(x => x.review === "Not Started");
+  if (next >= 0) {
+    current = next; chgQuery = "";
+    if (qFilter !== "all" && qFilter !== "Not Started") qFilter = "all";        // make sure they're visible in the queue
+    if (qSearch && !people[next].pid.includes(qSearch.trim().toUpperCase())) { qSearch = ""; document.getElementById("qSearch").value = ""; }
+  }
+  renderQueue(); renderForm();
+  if (next >= 0) {
+    document.querySelector(".work").scrollTop = 0; window.scrollTo(0, 0);
+    document.querySelector('.q-row[aria-current="true"]')?.scrollIntoView({ block: "nearest" });
+    toast(`Submitted ${p.pid}. Next up: ${people[next].pid}.`);
+  } else {
+    toast(`Submitted ${p.pid}. No Not Started reviews left.`);
+  }
 });
 
 const hadLocal = loadState();
